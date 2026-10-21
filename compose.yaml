@@ -1,0 +1,44 @@
+name: mcpanel
+
+services:
+  # Narrow gate to the Docker API: the panel never sees the raw socket.
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      EXEC: 1
+      NETWORKS: 1
+      POST: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - docker-api
+
+  panel:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    env_file: .env
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      MC_ROOT: ${MC_ROOT:-/srv/mcpanel}
+    ports:
+      # localhost only; reach it remotely with: ssh -L 8080:localhost:8080 user@host
+      - "127.0.0.1:${PANEL_PORT:-8080}:8000"
+    volumes:
+      - panel-data:/app/data
+      # Same path inside and out, so bind paths the panel hands to Docker are valid host paths.
+      - ${MC_ROOT:-/srv/mcpanel}:${MC_ROOT:-/srv/mcpanel}
+    networks:
+      - default
+      - docker-api
+
+networks:
+  docker-api:
+    internal: true
+
+volumes:
+  panel-data:

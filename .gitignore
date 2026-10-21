@@ -1,0 +1,24 @@
+# Secrets / local config
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+
+# Runtime data (SQLite, server folders, uploaded modpacks)
+data/
+dev-data/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,8 @@
+# Dev override: backend hot reload. Run the frontend on the host with `npm run dev`
+# (API_TARGET=http://localhost:8080) for Vite hot reload.
+#   docker compose -f compose.yaml -f compose.dev.yaml up --build
+services:
+  panel:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./backend/app:/app/app
