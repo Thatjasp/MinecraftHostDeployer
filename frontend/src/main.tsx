@@ -5,9 +5,11 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import { Layout, RequireAdmin } from "./components/Layout";
 import "./index.css";
+import CreateServerPage from "./pages/CreateServerPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
+import ServerPage from "./pages/ServerPage";
 import UsersPage from "./pages/UsersPage";
 
 const queryClient = new QueryClient();
@@ -21,7 +23,9 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/register" element={<RegisterPage />} />
           <Route element={<Layout />}>
             <Route index element={<DashboardPage />} />
+            <Route path="/servers/:id" element={<ServerPage />} />
             <Route element={<RequireAdmin />}>
+              <Route path="/servers/new" element={<CreateServerPage />} />
               <Route path="/users" element={<UsersPage />} />
             </Route>
           </Route>

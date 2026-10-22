@@ -10,7 +10,8 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     proxy: {
-      "/api": { target: apiTarget, changeOrigin: true, ws: true },
+      // No changeOrigin: the console WebSocket checks that Origin matches Host.
+      "/api": { target: apiTarget, ws: true },
     },
   },
 });

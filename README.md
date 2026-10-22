@@ -29,8 +29,11 @@ Backend (from `backend/`):
 ```sh
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev]"   # Linux/macOS: .venv/bin/python
-.venv/Scripts/uvicorn app.main:app --reload       # http://127.0.0.1:8000, docs at /api/docs
+MC_ROOT="$PWD/../dev-data" .venv/Scripts/uvicorn app.main:app --reload   # http://127.0.0.1:8000, docs at /api/docs
 ```
+
+The backend uses your local Docker (Docker Desktop is fine) to run Minecraft containers. `MC_ROOT` is where
+server folders go (`dev-data/` is git-ignored).
 
 Frontend (from `frontend/`):
 

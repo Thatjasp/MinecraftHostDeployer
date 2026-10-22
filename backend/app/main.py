@@ -8,13 +8,15 @@ from fastapi.responses import FileResponse
 
 from app.config import Settings, get_settings
 from app.db import make_engine, run_migrations
-from app.routers import auth, users
+from app.docker_service import DockerService
+from app.routers import auth, servers, users
 from app.security import LoginLimiter
+from app.servers import ServerManager
 
 log = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, docker: DockerService | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -35,6 +37,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.login_limiter = LoginLimiter(max_failures=5, window_seconds=300)
+    # The Docker client connects lazily, so the panel still starts (and logs in) without Docker.
+    app.state.servers = ServerManager(docker or DockerService(), settings.mc_root)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -42,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(users.router)
+    app.include_router(servers.router)
 
     _mount_frontend(app, settings.frontend_dist)
     return app

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlmodel import Field, SQLModel
+from sqlmodel import JSON, Column, Field, SQLModel
 
 
 def utcnow() -> datetime:
@@ -40,3 +40,22 @@ class AuthSession(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id", index=True, ondelete="CASCADE")
     created_at: datetime = Field(default_factory=utcnow)
     expires_at: datetime
+
+
+class Server(SQLModel, table=True):
+    """A Minecraft server; runs as the itzg/minecraft-server container `mcpanel-<id>`."""
+
+    __tablename__ = "servers"
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(max_length=40, unique=True)
+    port: int = Field(unique=True)
+    memory: str = Field(max_length=8)  # itzg MEMORY, e.g. "4G"
+    image_tag: str = Field(max_length=32)  # itzg tag: latest, java21, java17, ...
+    server_type: str = Field(max_length=32)  # itzg TYPE: VANILLA, AUTO_CURSEFORGE, ...
+    version: str = Field(max_length=32)  # itzg VERSION, e.g. LATEST or 1.20.1
+    motd: str = Field(default="", max_length=120)
+    # Additional itzg env for the server type (CurseForge settings etc.).
+    extra_env: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    created_by_id: int | None = Field(default=None, foreign_key="users.id", ondelete="SET NULL")
+    created_at: datetime = Field(default_factory=utcnow)

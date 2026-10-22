@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from tests.fake_docker import FakeDocker
 
 PASSWORD = "correct-horse-battery"
 
@@ -15,15 +16,23 @@ def app_settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
         secret_key="test-secret",
-        data_dir=tmp_path,
+        data_dir=tmp_path / "data",
+        mc_root=tmp_path / "mc",
         frontend_dist=tmp_path / "no-frontend",
     )
 
 
 @pytest.fixture
-def make_client(app_settings: Settings) -> Iterator[Callable[[], TestClient]]:
+def fake_docker() -> FakeDocker:
+    return FakeDocker()
+
+
+@pytest.fixture
+def make_client(
+    app_settings: Settings, fake_docker: FakeDocker
+) -> Iterator[Callable[[], TestClient]]:
     """Clients share one app/DB but keep separate cookie jars (i.e. separate browsers)."""
-    app = create_app(app_settings)
+    app = create_app(app_settings, docker=fake_docker)
     clients: list[TestClient] = []
 
     def factory() -> TestClient:
