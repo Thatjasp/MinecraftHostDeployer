@@ -25,6 +25,14 @@ CONFIG_LABEL = "mcpanel.config-hash"
 STOP_TIMEOUT_SECONDS = 60
 
 
+class ServerType(StrEnum):
+    """itzg TYPE values the panel creates."""
+
+    VANILLA = "VANILLA"
+    AUTO_CURSEFORGE = "AUTO_CURSEFORGE"  # pack slug/URL, or a client-export zip
+    CURSEFORGE = "CURSEFORGE"  # server-pack zip (deprecated in itzg, but still supported)
+
+
 class ServerState(StrEnum):
     STOPPED = "stopped"
     PULLING = "pulling"  # downloading the itzg image
@@ -58,14 +66,17 @@ def container_name(server_id: int) -> str:
     return f"mcpanel-{server_id}"
 
 
-def build_env(server: Server) -> dict[str, str]:
+def build_env(server: Server, cf_api_key: str) -> dict[str, str]:
     env = {
         "EULA": "TRUE",  # only reachable after the user accepted the EULA on create
         "TYPE": server.server_type,
-        "VERSION": server.version,
         "MEMORY": server.memory,
         "ENABLE_RCON": "true",  # rcon-cli inside the container is how console commands run
     }
+    if server.server_type == ServerType.VANILLA:
+        env["VERSION"] = server.version  # modpacks bring their own version
+    if server.server_type == ServerType.AUTO_CURSEFORGE and cf_api_key:
+        env["CF_API_KEY"] = cf_api_key  # injected, never stored in the DB
     if server.motd:
         env["MOTD"] = server.motd
     env.update(server.extra_env)
@@ -73,9 +84,10 @@ def build_env(server: Server) -> dict[str, str]:
 
 
 class ServerManager:
-    def __init__(self, docker: DockerService, mc_root: Path) -> None:
+    def __init__(self, docker: DockerService, mc_root: Path, cf_api_key: str = "") -> None:
         self.docker = docker
         self.mc_root = mc_root
+        self.cf_api_key = cf_api_key
         self._lock = threading.Lock()
         self._ops: dict[int, ServerState] = {}  # in-flight background operation per server
         self._errors: dict[int, str] = {}  # last background failure, shown until the next action
@@ -84,10 +96,15 @@ class ServerManager:
     def data_dir(self, server_id: int) -> Path:
         return (self.mc_root / "servers" / str(server_id)).resolve()
 
+    def modpacks_dir(self) -> Path:
+        return (self.mc_root / "modpacks").resolve()
+
     def spec(self, server: Server) -> ContainerSpec:
-        env = build_env(server)
+        env = build_env(server, self.cf_api_key)
         image = f"{IMAGE_REPO}:{server.image_tag}"
-        fingerprint = json.dumps([image, server.port, env], sort_keys=True)
+        zip_path = str(self.modpacks_dir() / server.modpack_zip) if server.modpack_zip else None
+        start_period = 120 if server.server_type == ServerType.VANILLA else 30 * 60
+        fingerprint = json.dumps([image, server.port, env, zip_path, start_period], sort_keys=True)
         return ContainerSpec(
             name=container_name(server.id),
             image=image,
@@ -98,6 +115,8 @@ class ServerManager:
                 "mcpanel.server-id": str(server.id),
                 CONFIG_LABEL: hashlib.sha256(fingerprint.encode()).hexdigest()[:16],
             },
+            modpack_zip=zip_path,
+            health_start_period_s=start_period,
         )
 
     # --- status ---------------------------------------------------------------------------
@@ -224,6 +243,8 @@ class ServerManager:
             self._errors.pop(server.id, None)
         spec = self.spec(server)
         self.docker.remove(spec.name)
+        if spec.modpack_zip:
+            Path(spec.modpack_zip).unlink(missing_ok=True)
         data_dir = Path(spec.data_dir)
         if not data_dir.exists():
             return

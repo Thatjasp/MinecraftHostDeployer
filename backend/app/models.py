@@ -53,8 +53,13 @@ class Server(SQLModel, table=True):
     memory: str = Field(max_length=8)  # itzg MEMORY, e.g. "4G"
     image_tag: str = Field(max_length=32)  # itzg tag: latest, java21, java17, ...
     server_type: str = Field(max_length=32)  # itzg TYPE: VANILLA, AUTO_CURSEFORGE, ...
-    version: str = Field(max_length=32)  # itzg VERSION, e.g. LATEST or 1.20.1
+    # Vanilla: itzg VERSION (LATEST or 1.20.1). Modpacks: the pack's MC version, for display only.
+    version: str = Field(max_length=32)
     motd: str = Field(default="", max_length=120)
+    modpack: str = Field(default="", max_length=200)  # display name, e.g. "All the Mods 9 · 1.1.1"
+    loader: str = Field(default="", max_length=16)  # Forge, NeoForge, Fabric, ...
+    # Uploaded zip in $MC_ROOT/modpacks, bind-mounted read-only at /modpacks/pack.zip.
+    modpack_zip: str | None = Field(default=None, max_length=64)
     # Additional itzg env for the server type (CurseForge settings etc.).
     extra_env: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
     created_by_id: int | None = Field(default=None, foreign_key="users.id", ondelete="SET NULL")

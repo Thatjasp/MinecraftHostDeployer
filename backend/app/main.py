@@ -7,16 +7,22 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
 from app.config import Settings, get_settings
+from app.curseforge import CurseForgeClient
 from app.db import make_engine, run_migrations
 from app.docker_service import DockerService
-from app.routers import auth, servers, users
+from app.routers import auth, modpacks, servers, users
 from app.security import LoginLimiter
 from app.servers import ServerManager
+from app.uploads import UploadStore
 
 log = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None, docker: DockerService | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    docker: DockerService | None = None,
+    curseforge: CurseForgeClient | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -38,7 +44,11 @@ def create_app(settings: Settings | None = None, docker: DockerService | None = 
     app.state.settings = settings
     app.state.login_limiter = LoginLimiter(max_failures=5, window_seconds=300)
     # The Docker client connects lazily, so the panel still starts (and logs in) without Docker.
-    app.state.servers = ServerManager(docker or DockerService(), settings.mc_root)
+    app.state.servers = ServerManager(
+        docker or DockerService(), settings.mc_root, settings.cf_api_key
+    )
+    app.state.curseforge = curseforge or CurseForgeClient(settings.cf_api_key)
+    app.state.uploads = UploadStore(app.state.servers.modpacks_dir())
 
     @app.get("/api/health")
     def health() -> dict[str, str]:
@@ -47,6 +57,7 @@ def create_app(settings: Settings | None = None, docker: DockerService | None = 
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(servers.router)
+    app.include_router(modpacks.router)
 
     _mount_frontend(app, settings.frontend_dist)
     return app

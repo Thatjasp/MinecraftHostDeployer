@@ -27,6 +27,12 @@ class ContainerSpec:
     host_port: int
     data_dir: str
     labels: dict[str, str]
+    modpack_zip: str | None = None  # host file, mounted read-only at MODPACK_ZIP_PATH
+    # Grace period before failed healthchecks count; modpack installs need far more than vanilla.
+    health_start_period_s: int = 120
+
+
+MODPACK_ZIP_PATH = "/modpacks/pack.zip"
 
 
 @dataclass(frozen=True)
@@ -110,12 +116,23 @@ class DockerService:
             self.client.images.pull(repo, tag=tag)
 
     def create(self, spec: ContainerSpec) -> None:
+        volumes = {spec.data_dir: {"bind": "/data", "mode": "rw"}}
+        if spec.modpack_zip:
+            volumes[spec.modpack_zip] = {"bind": MODPACK_ZIP_PATH, "mode": "ro"}
+        seconds = 1_000_000_000
         self.client.containers.create(
             spec.image,
             name=spec.name,
             environment=spec.env,
             ports={"25565/tcp": spec.host_port},
-            volumes={spec.data_dir: {"bind": "/data", "mode": "rw"}},
+            volumes=volumes,
+            # itzg's own check, with a start period long enough for the server to finish loading.
+            healthcheck={
+                "test": ["CMD-SHELL", "mc-health"],
+                "interval": 30 * seconds,
+                "start_period": spec.health_start_period_s * seconds,
+                "retries": 2,
+            },
             labels={MANAGED_LABEL: "true", **spec.labels},
             # Comes back after a host reboot unless it was stopped through the panel.
             restart_policy={"Name": "unless-stopped"},

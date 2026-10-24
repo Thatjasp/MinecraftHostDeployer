@@ -45,7 +45,13 @@ def wait(client: TestClient, server_id: int) -> dict:
 def test_create_starts_container_with_itzg_settings(
     admin: TestClient, fake_docker: FakeDocker, app_settings: Settings
 ) -> None:
-    server = create(admin, memory="6G", motd="Hello", version="1.21.1", image_tag="java21")
+    server = create(
+        admin,
+        memory="6G",
+        motd="Hello",
+        source={"type": "vanilla", "version": "1.21.1"},
+        image_tag="java21",
+    )
     assert server["port"] == 25565
     assert wait(admin, server["id"])["state"] == "online"
 
@@ -71,7 +77,13 @@ def test_create_requires_eula(admin: TestClient) -> None:
 
 
 def test_create_validation(admin: TestClient) -> None:
-    for bad in ({"memory": "4GB"}, {"port": 80}, {"image_tag": "java99"}, {"version": "1.20; rm"}):
+    for bad in (
+        {"memory": "4GB"},
+        {"port": 80},
+        {"image_tag": "java99"},
+        {"source": {"type": "vanilla", "version": "1.20; rm"}},
+        {"source": {"type": "unknown"}},
+    ):
         response = admin.post("/api/servers", json={"name": "x", "accept_eula": True, **bad})
         assert response.status_code == 422, bad
 

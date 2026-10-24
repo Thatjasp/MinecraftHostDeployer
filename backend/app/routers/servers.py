@@ -4,17 +4,30 @@ import threading
 from typing import Annotated
 from urllib.parse import urlsplit
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from starlette.websockets import WebSocketDisconnect
 
+from app.curseforge import CurseForgeClient, CurseForgeError, parse_pack_ref, suggest_image_tag
 from app.db import DbSession
-from app.deps import SESSION_COOKIE, AdminUser, CurrentUser, user_from_token
-from app.docker_service import DockerException, DockerUnavailable, LogStream
+from app.deps import SESSION_COOKIE, AdminUser, AppSettings, CurrentUser, user_from_token
+from app.docker_service import MODPACK_ZIP_PATH, DockerException, DockerUnavailable, LogStream
 from app.models import Server
-from app.schemas import CommandIn, CommandOut, ServerCreate, ServerOut
-from app.servers import CommandFailed, ServerBusy, ServerManager, ServerNotRunning
+from app.modpack import InvalidModpack, ZipKind, inspect_zip
+from app.routers.modpacks import CurseForge, Uploads
+from app.schemas import (
+    CommandIn,
+    CommandOut,
+    CurseForgeSource,
+    ServerCreate,
+    ServerOut,
+    UploadSource,
+    VanillaSource,
+)
+from app.servers import CommandFailed, ServerBusy, ServerManager, ServerNotRunning, ServerType
+from app.uploads import UploadNotFound, UploadStore
 
 router = APIRouter(prefix="/api/servers", tags=["servers"])
 
@@ -31,7 +44,8 @@ Manager = Annotated[ServerManager, Depends(get_manager)]
 def _out(server: Server, manager: ServerManager) -> ServerOut:
     current = manager.status(server.id)
     return ServerOut(
-        **server.model_dump(exclude={"extra_env", "created_by_id"}),
+        **server.model_dump(exclude={"extra_env", "created_by_id", "modpack_zip"}),
+        data_dir=str(manager.data_dir(server.id)),
         state=current.state,
         detail=current.detail,
     )
@@ -75,19 +89,78 @@ def list_servers(db: DbSession, manager: Manager, _user: CurrentUser) -> list[Se
     return [_out(s, manager) for s in db.exec(select(Server).order_by(Server.name))]
 
 
+def _source_fields(
+    body: ServerCreate, curseforge: CurseForgeClient, uploads: UploadStore, cf_api_key: str
+) -> dict:
+    """Server columns (type, version, itzg env, ...) for the requested source."""
+    source = body.source
+    # Where itzg reads mods CurseForge won't let it download (users drop them in the server folder).
+    manual_downloads = {"CF_DOWNLOADS_REPO": "/data/downloads"}
+
+    if isinstance(source, VanillaSource):
+        return {"server_type": ServerType.VANILLA, "version": source.version}
+
+    if isinstance(source, CurseForgeSource):
+        try:
+            info = curseforge.lookup(parse_pack_ref(source.ref))
+        except CurseForgeError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+        return {
+            "server_type": ServerType.AUTO_CURSEFORGE,
+            "version": info.mc_version or "",
+            "loader": info.loader or "",
+            "modpack": f"{info.name} · {info.file_name}"[:200],
+            # Pin the file looked up now, so restarts don't silently update the pack.
+            "extra_env": {
+                "CF_SLUG": info.slug,
+                "CF_FILE_ID": str(info.file_id),
+                **manual_downloads,
+            },
+        }
+
+    try:
+        zip_info = inspect_zip(str(uploads.path(source.upload_id)))
+    except (UploadNotFound, InvalidModpack) as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    fields = {
+        "version": zip_info.mc_version or "",
+        "loader": zip_info.loader or "",
+        "modpack": (zip_info.name or uploads.original_name(source.upload_id))[:200],
+    }
+    if zip_info.kind == ZipKind.CLIENT:
+        if not cf_api_key:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "CF_API_KEY is not set in .env; it's needed to download mods",
+            )
+        fields["server_type"] = ServerType.AUTO_CURSEFORGE
+        # itzg requires a slug even for unpublished packs; any identifier works.
+        env = {"CF_MODPACK_ZIP": MODPACK_ZIP_PATH, "CF_SLUG": "custom", **manual_downloads}
+    else:
+        fields["server_type"] = ServerType.CURSEFORGE
+        env = {"CF_SERVER_MOD": MODPACK_ZIP_PATH, "CF_BASE_DIR": "/data"}
+    return {**fields, "extra_env": env}
+
+
 @router.post("", response_model=ServerOut, status_code=status.HTTP_201_CREATED)
 def create_server(
-    body: ServerCreate, db: DbSession, manager: Manager, admin: AdminUser
+    body: ServerCreate,
+    db: DbSession,
+    manager: Manager,
+    curseforge: CurseForge,
+    uploads: Uploads,
+    settings: AppSettings,
+    admin: AdminUser,
 ) -> ServerOut:
+    fields = _source_fields(body, curseforge, uploads, settings.cf_api_key)
     server = Server(
         name=body.name,
         port=body.port or _next_free_port(db),
         memory=body.memory,
-        image_tag=body.image_tag,
-        server_type="VANILLA",
-        version=body.version,
+        image_tag=body.image_tag or suggest_image_tag(fields["version"]),
         motd=body.motd,
         created_by_id=admin.id,
+        **fields,
     )
     db.add(server)
     try:
@@ -96,6 +169,12 @@ def create_server(
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, "Name or port is already used") from None
     db.refresh(server)
+
+    if isinstance(body.source, UploadSource):
+        server.modpack_zip = uploads.claim(body.source.upload_id, server.id)
+        db.add(server)
+        db.commit()
+        db.refresh(server)
     if body.start:
         _docker_call(manager.start, server)
     return _out(server, manager)
@@ -166,13 +245,13 @@ async def console(websocket: WebSocket, server_id: int) -> None:
         return
 
     await websocket.accept()
-    pump = asyncio.create_task(_pump_logs(websocket, app.state.servers, server_id))
-    # The client never sends anything; receive() just tells us when it goes away.
-    disconnect = asyncio.create_task(websocket.receive())
-    await asyncio.wait({pump, disconnect}, return_when=asyncio.FIRST_COMPLETED)
-    for task in (pump, disconnect):
-        task.cancel()
-    await asyncio.gather(pump, disconnect, return_exceptions=True)
+    # anyio task group (not bare asyncio tasks) so Starlette/uvicorn cancellation unwinds cleanly.
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(_pump_logs, websocket, app.state.servers, server_id)
+        # The client never sends anything; receive() just tells us when it goes away.
+        while (await websocket.receive())["type"] != "websocket.disconnect":
+            pass
+        tasks.cancel_scope.cancel()
     # The client may already be gone (the pump only notices when a send fails).
     with contextlib.suppress(WebSocketDisconnect, RuntimeError):
         await websocket.close()

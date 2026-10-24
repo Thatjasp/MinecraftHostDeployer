@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A localhost-only web panel for creating and running CurseForge modded Minecraft servers, with
 accounts and a live console. The Python (FastAPI) backend is in `backend/`. The React/TS/Vite frontend,
 built with Node, is in `frontend/`. It deploys with Docker Compose on a Linux host. The project is being
-built in stages: the scaffold, accounts and the vanilla server lifecycle with console are done; next come
-CurseForge install, then admin pages (server settings editing, file browser).
+built in stages: the scaffold, accounts, the server lifecycle with console, and CurseForge modpack installs
+are done; next come admin pages (server settings editing, file browser).
 
 ## Commands
 
@@ -26,12 +26,15 @@ Backend (run from `backend/`, venv at `backend/.venv`; on Windows use `.venv/Scr
 Frontend (run from `frontend/`):
 - `npm run dev` (port 5173; proxies `/api`, including WebSockets, to `API_TARGET`, default `http://localhost:8000`)
 - `npm run build` (type-checks with `tsc -b` first), `npm run lint`, `npm test` (Vitest with `--passWithNoTests`;
-  no frontend tests exist yet; single file: `npx vitest run src/x.test.ts`)
+  tests live next to the code as `*.test.ts`; single file: `npx vitest run src/api.test.ts`)
 
 Docker: `docker compose up -d --build` (panel on `127.0.0.1:${PANEL_PORT:-8080}`); backend hot reload with
 `docker compose -f compose.yaml -f compose.dev.yaml up --build`, then point Vite at it with
 `API_TARGET=http://localhost:8080 npm run dev`. Compose requires a `.env` (see `.env.example`: `SECRET_KEY`,
-`CF_API_KEY`, `MC_ROOT`, `PANEL_PORT`).
+`CF_API_KEY`, `MC_ROOT`, `PANEL_PORT`). `CF_API_KEY` must be single-quoted in `.env`. CurseForge keys contain `$`,
+which Compose otherwise treats as variables and silently mangles. Python reads it fine either way, so only
+the Docker deployment breaks. Note that `docker compose config` prints `$` as `$$`; check the value inside the
+container instead.
 
 Full pre-commit check (same as README): backend `pytest` + `ruff check .` + `ruff format --check .`;
 frontend `npm run lint && npm test && npm run build`. Ruff uses line length 100, Python 3.12 target.
@@ -74,6 +77,28 @@ frontend `npm run lint && npm test && npm run build`. Ruff uses line length 100,
     On start, a container whose config hash no longer matches the row (env/image/port changed) is removed and
     recreated. World data lives in the bind-mounted folder, so it survives. `extra_env` on `Server` holds
     type-specific itzg env (CurseForge settings go there).
+  - Containers get their own healthcheck (itzg's `mc-health`) with a start period of 2 min for vanilla and
+    30 min for modpacks. Otherwise long modpack installs would show as `unhealthy`.
+- **Modpacks** (`ServerType` in `app/servers.py`; sources resolved in `_source_fields` in `routers/servers.py`):
+  - CurseForge URL/slug → `AUTO_CURSEFORGE` with `CF_SLUG` + `CF_FILE_ID`. The file is pinned at create time
+    so restarts never update the pack.
+  - Uploaded client export (has `manifest.json`) → `AUTO_CURSEFORGE` + `CF_MODPACK_ZIP` + `CF_SLUG=custom`
+    (itzg requires a slug even for unpublished packs).
+  - Uploaded server pack → `CURSEFORGE` (deprecated in itzg but still supported) + `CF_SERVER_MOD`, `CF_BASE_DIR=/data`.
+  - `CF_API_KEY` is injected into the env by `build_env` from settings for `AUTO_CURSEFORGE`; it is never stored in
+    the DB. `CF_DOWNLOADS_REPO=/data/downloads` means mods CurseForge won't let itzg download can be dropped
+    into `<server data dir>/downloads`.
+  - `VERSION` is only sent for vanilla. For modpacks `Server.version` is the pack's MC version, used for display
+    and for `suggest_image_tag` (`app/curseforge.py`).
+  - `app/curseforge.py` (`CurseForgeClient`, stdlib urllib; tests pass `fetch=fake_fetch` from
+    `tests/fake_curseforge.py`) powers `POST /api/modpacks/lookup` previews.
+  - `app/modpack.py` inspects zips without extracting them (detects client vs server pack and the MC version/loader,
+    and rejects unsafe paths).
+  - Uploads (`app/uploads.py`) are the raw request body of `POST /api/modpacks/upload?filename=`, not multipart. They
+    stream to `$MC_ROOT/modpacks/pending/<id>.zip` with a `max_upload_mb` cap. On create the zip is moved to
+    `modpacks/server-<id>.zip` (`Server.modpack_zip`) and bind-mounted read-only at `/modpacks/pack.zip`.
+    Pending uploads expire after 24h, and deleting a server deletes its zip.
+  - Available Java tags are `IMAGE_TAGS` in `app/servers.py`, mirrored in `frontend/src/servers.ts`.
 - **Console:** `WS /api/servers/{id}/console` is read-only. It streams `docker logs --follow` batched as
   `{"type":"log","lines":[...]}`. When a container stops it re-polls and resumes with `since` (last log
   timestamp), so a restart continues the same stream. Auth uses the cookie plus an Origin == Host check;
@@ -89,11 +114,7 @@ frontend `npm run lint && npm test && npm run build`. Ruff uses line length 100,
   hands to Docker for itzg bind mounts are therefore valid host paths. Keep it that way.
 - Panel and itzg both run as **UID 1000** so both can write server folders.
 - The panel port is published on `127.0.0.1` only; Minecraft ports are published on all interfaces for LAN players.
-
-## Planned design (not built yet)
-
-- Modpack sources map to itzg env (stored in `Server.extra_env`): pack slug/URL → `TYPE=AUTO_CURSEFORGE` +
-  `CF_SLUG`/`CF_PAGE_URL`; client-export zip (has `manifest.json`) → `AUTO_CURSEFORGE` + `CF_MODPACK_ZIP`;
-  server-pack zip → `TYPE=CURSEFORGE` + `CF_SERVER_MOD`. The image tag will be suggested from the MC version
-  (≤1.16 java8, ≤1.20.4 java17, ≤1.21.x java21, 26.1+ java25). Available tags are `IMAGE_TAGS` in
-  `app/servers.py`, mirrored in `frontend/src/servers.ts`.
+- **Console WebSocket handler** uses an anyio task group, not bare `asyncio` tasks. With bare tasks, Starlette's
+  cancellation on disconnect intermittently escaped as `CancelledError` (a flaky `test_console_streams_logs`).
+- **Editing files from Python on Windows:** pass `encoding="utf-8"` to `read_text`/`write_text`. The default
+  (cp1252) corrupts non-ASCII characters such as the `·` used in display strings.

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     # Built React app; served by FastAPI when present (production image).
     frontend_dist: Path = Path("frontend/dist")
     session_days: int = 7
+    max_upload_mb: int = 2048
     # Plain http is expected (localhost / SSH tunnel); set true behind HTTPS.
     cookie_secure: bool = False
 

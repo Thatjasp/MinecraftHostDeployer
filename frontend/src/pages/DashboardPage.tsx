@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useMe } from "../auth";
 import { StateBadge } from "../components/StateBadge";
 import { Alert } from "../components/ui";
-import { useServers } from "../servers";
+import { describeServer, useServers } from "../servers";
 
 export default function DashboardPage() {
   const me = useMe();
@@ -47,9 +47,9 @@ export default function DashboardPage() {
                 <span className="truncate font-medium">{server.name}</span>
                 <StateBadge state={server.state} />
               </div>
-              <div className="mt-2 text-sm text-zinc-400">
-                {server.server_type.toLowerCase()} {server.version} · port {server.port} ·{" "}
-                {server.memory} RAM
+              <div className="mt-2 truncate text-sm text-zinc-400">{describeServer(server)}</div>
+              <div className="text-sm text-zinc-500">
+                port {server.port} · {server.memory} RAM
               </div>
             </Link>
           </li>

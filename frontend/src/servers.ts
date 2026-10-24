@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api, del, post } from "./api";
+import { api, del, post, uploadFile } from "./api";
 
 export type ServerState =
   | "stopped"
@@ -21,19 +21,57 @@ export interface Server {
   server_type: string;
   version: string;
   motd: string;
+  modpack: string;
+  loader: string;
+  data_dir: string;
   created_at: string;
   state: ServerState;
   detail: string | null;
 }
 
+export type ServerSource =
+  | { type: "vanilla"; version: string }
+  | { type: "curseforge"; ref: string }
+  | { type: "upload"; upload_id: string };
+
 export interface ServerCreate {
   name: string;
-  version: string;
+  source: ServerSource;
   port: number | null;
   memory: string;
-  image_tag: string;
+  image_tag: string | null;
   motd: string;
   accept_eula: boolean;
+}
+
+/** Pack details shown before creating (from a CurseForge lookup or an uploaded zip). */
+export interface PackPreview {
+  name: string;
+  mc_version: string | null;
+  loader: string | null;
+  suggested_image_tag: string;
+  summary: string | null;
+  logo_url: string | null;
+  page_url: string | null;
+  file_name: string | null;
+  upload_id: string | null;
+  kind: "client" | "server" | null;
+}
+
+export const lookupPack = (ref: string) => post<PackPreview>("/modpacks/lookup", { ref });
+
+export const uploadModpack = (file: File, onProgress: (fraction: number) => void) =>
+  uploadFile<PackPreview>(
+    `/modpacks/upload?filename=${encodeURIComponent(file.name)}`,
+    file,
+    onProgress,
+  );
+
+/** Short description of what a server runs, e.g. "All the Mods 9 · Forge 1.20.1". */
+export function describeServer(server: Server): string {
+  if (server.server_type === "VANILLA") return `Vanilla ${server.version}`;
+  const runtime = [server.loader, server.version].filter(Boolean).join(" ");
+  return [server.modpack, runtime].filter(Boolean).join(" · ");
 }
 
 // Must match IMAGE_TAGS in backend/app/servers.py.
